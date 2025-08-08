@@ -1,5 +1,13 @@
 
+import argparse
 import pygame as pg, random, math, os, sys
+from enum import Enum
+
+
+class GameMode(Enum):
+    """Supported game modes."""
+    SPEED = "speed"
+    GROWTH = "growth"
 
 GRID_W, GRID_H = 22, 26
 CELL = 28
@@ -9,8 +17,6 @@ W, H = GRID_W*CELL + PAD*2, GRID_H*CELL + PAD*2 + TOP
 FPS  = 60
 
 SPEED_BASE = 6.0
-SPEED_INC  = 0.65
-SPEED_MAX  = 22.0
 
 # Duraciones
 SLOW_DUR  = 4.0
@@ -76,10 +82,11 @@ class Player:
         sc.blit(img,rect)
 
 class Game:
-    def __init__(self, screen):
+    def __init__(self, screen, mode: GameMode = GameMode.SPEED):
         self.sc=screen; self.clock=pg.time.Clock()
         self.font=pg.font.SysFont('consolas',18); self.big=pg.font.SysFont('consolas',32,bold=True)
         self.wrap=True
+        self.mode=mode
         # load panda
         base=pg.image.load(os.path.join('assets','panda.png')).convert_alpha()
         w,h=base.get_size()
@@ -99,10 +106,18 @@ class Game:
         # combo
         self.combo=0; self.combo_timer=0.0
         self.fruit=None; self.power=None
+        if self.mode == GameMode.GROWTH:
+            self.body=[self.player.cell]
+            self.len=3
+        else:
+            self.body=[]
+            self.len=0
         self.spawn_fruit(); self.spawn_power(chance=0.35)
         self._cnt=3
     def spawn_fruit(self):
         occ={self.player.cell}
+        if self.mode == GameMode.GROWTH:
+            occ.update(self.body)
         while True:
             c=(random.randrange(GRID_W), random.randrange(GRID_H))
             if c not in occ: self.fruit=c; return
@@ -110,6 +125,8 @@ class Game:
         if random.random()>chance: self.power=None; return
         kinds=['slow','magnet']; kind=random.choice(kinds)
         occ={self.player.cell, self.fruit} if self.fruit else {self.player.cell}
+        if self.mode == GameMode.GROWTH:
+            occ.update(self.body)
         while True:
             c=(random.randrange(GRID_W), random.randrange(GRID_H))
             if c not in occ: self.power=(kind,c); return
@@ -124,7 +141,13 @@ class Game:
         for y in range(GRID_H+1):
             y1=TOP+PAD+y*CELL+osc; pg.draw.line(self.sc,gc,(PAD,y1),(PAD+GRID_W*CELL,y1),1)
         pg.draw.rect(self.sc,(0,0,0,180),(0,0,W,TOP))
-        self.sc.blit(self.font.render("RED PANDA FRUIT DASH",True,THEME['ink']),(8,6))
+        title=self.font.render("RED PANDA FRUIT DASH",True,THEME['ink'])
+        self.sc.blit(title,(8,6))
+        info=f"MODE: {self.mode.name} | SPEED x{self.speed/SPEED_BASE:.2f}"
+        if self.mode==GameMode.GROWTH:
+            info+=f" | LEN: {self.len}"
+        info_r=self.font.render(info,True,THEME['ink'])
+        self.sc.blit(info_r,(8+title.get_width()+20,6))
         self.sc.blit(self.font.render(f"{self.score:05d}",True,THEME['ink']),(W-70,6))
         # status power-ups
         xs=W-250; y=6
@@ -163,7 +186,7 @@ class Game:
     def start_menu(self,dt):
         t=pg.time.get_ticks()/1000; self.draw_bg(t)
         msg=self.big.render("PRESS ENTER",True,THEME['ink']); self.sc.blit(msg,(W//2-msg.get_width()//2, H-64))
-        hint=self.font.render("TAB: Wrap ON/OFF | Flechas/WASD para mover",True,THEME['ink'])
+        hint=self.font.render("TAB: Wrap ON/OFF | M: Mode | Flechas/WASD para mover",True,THEME['ink'])
         self.sc.blit(hint,(W//2-hint.get_width()//2, H-36))
         self.sc.blit(self.vign,(0,0)); pg.display.flip()
         for e in pg.event.get():
@@ -171,6 +194,9 @@ class Game:
             if e.type==pg.KEYDOWN:
                 if e.key in (pg.K_RETURN, pg.K_SPACE): self.state='game'; self._cnt=3; self.sfx['count'].play()
                 elif e.key==pg.K_TAB: self.wrap=not self.wrap; self.reset()
+                elif e.key==pg.K_m:
+                    self.mode = GameMode.GROWTH if self.mode==GameMode.SPEED else GameMode.SPEED
+                    self.reset()
     def start_game(self,dt):
         t=pg.time.get_ticks()/1000; self.draw_bg(t)
         if self._cnt>0:
@@ -208,10 +234,25 @@ class Game:
             self.acc -= step_time
             if not self.player.step():
                 self.sfx['die'].play(); self.state='menu'; self.reset(); return
-            # fruit check
-            if self.fruit and self.player.cell==self.fruit:
+
+            ate = self.fruit and self.player.cell == self.fruit
+
+            if self.mode == GameMode.GROWTH:
+                self.body.insert(0, self.player.cell)
+                if ate:
+                    self.len += 1
+                if len(self.body) > self.len:
+                    self.body.pop()
+                if self.player.cell in self.body[1:]:
+                    self.sfx['die'].play(); self.state='menu'; self.reset(); return
+
+            if ate:
                 self.score += 10; self.sfx['eat'].play()
-                self.speed = min(SPEED_MAX, self.speed+SPEED_INC)
+                if self.mode == GameMode.SPEED:
+                    self.speed = min(self.speed * 1.10, 2.5 * SPEED_BASE)
+                else:
+                    if (self.len-3) > 0 and (self.len-3) % 5 == 0:
+                        self.speed = min(self.speed * 1.05, 1.8 * SPEED_BASE)
                 # combo
                 self.combo = self.combo+1 if self.combo_timer>0 else 1
                 self.combo_timer = COMBO_WIN
@@ -222,6 +263,7 @@ class Game:
                 self.spawn_fruit()
                 # 30% chance to spawn a power-up after eating
                 self.spawn_power(chance=0.30)
+
             # power-up check
             if self.power and self.player.cell==self.power[1]:
                 kind,_=self.power
@@ -236,6 +278,12 @@ class Game:
         # draw
         if self.fruit: self.draw_strawberry(self.fruit)
         self.draw_power()
+        if self.mode == GameMode.GROWTH:
+            for i,cell in enumerate(self.body[1:],1):
+                t=i/max(1,len(self.body)-1)
+                col=tuple(int(THEME['straw'][j]*(1-t)+THEME['leaf'][j]*t) for j in range(3))
+                x,y=grid_to_px(*cell)
+                pg.draw.circle(self.sc,col,(x,y),int(CELL*0.35))
         self.player.draw(self.sc, self.speed)
         self.sc.blit(self.vign,(0,0))
         pg.display.flip()
@@ -247,10 +295,13 @@ class Game:
             else: self.start_game(dt)
 
 def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=[m.value for m in GameMode], default="speed", help="Game mode")
+    args=parser.parse_args()
     pg.init(); pg.mixer.init()
     pg.display.set_caption("Red Panda Fruit Dash v05")
     sc=pg.display.set_mode((W,H))
-    Game(sc).run()
+    Game(sc, mode=GameMode(args.mode)).run()
 
 if __name__=="__main__":
     main()
